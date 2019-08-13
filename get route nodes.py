@@ -26,7 +26,6 @@ import json
 import xml.etree.ElementTree as et
 import math
 import pandas as pd
-from csv import QUOTE_NONE
 
 
 def gcd(o_lat, o_lon, d_lat, d_lon):
