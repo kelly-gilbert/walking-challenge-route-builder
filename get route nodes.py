@@ -15,6 +15,7 @@
  2018-05-27 - Modified variable and function names to be PEP 8 compliant
  2018-05-27 - Removed previous cuml distance and added distance to next node
  2019-08-11 - Changed distance calculations to use a dataframe
+ 2019-08-12 - Added geojson output for nodes and line (path)
  -----------------------------------------------------------------------------
 """
 
@@ -25,6 +26,7 @@ import json
 import xml.etree.ElementTree as et
 import math
 import pandas as pd
+from csv import QUOTE_NONE
 
 
 def gcd(o_lat, o_lon, d_lat, d_lon):
@@ -123,8 +125,8 @@ def get_nodes(o_lat, o_lon, d_lat, d_lon):
                   + ' (status code = ' + str(r.status_code) + ')')
             
         # every 100 nodes, print a status message
-        if i % 100 == 0:
-            print('    Completed node ' + str(i) + ' of ' + str(len(nodes)) + '...')
+        if (i+1) % 100 == 0:
+            print('    Completed node ' + str(i+1) + ' of ' + str(len(nodes)) + '...')
 
     print('  Done getting nodes')     
 
@@ -135,18 +137,58 @@ def get_nodes(o_lat, o_lon, d_lat, d_lon):
     return node_list
 
 
+def point_string(row, points_count):
+    """ 
+    function that receives a row from a dataframe
+    and outputs a geojson-formatted string for the point feature
+    """
+    point_string = '    {'
+    point_string += '      "type": "Feature",'
+    point_string += '      "properties": { '
+    point_string += '        "node_order": ' + str(row.name) + ','
+    point_string += '        "node_id": "' + str(row['node_id']) + '",'
+    point_string += '        "distance_from_prev_node": ' + str(row['dist_from_prev']) + ','
+    point_string += '        "cuml_distance": ' + str(row['cuml_dist']) + ','
+    point_string += '        "distance_to_next_node": ' + str(row['dist_to_next']) + ','
+    point_string += '        "type": "route node"'
+    point_string += '      },'
+    point_string += '      "geometry": {'
+    point_string += '        "type": "Point",'
+    point_string += '        "coordinates": [' + str(row['node_lon']) + ',' + str(row['node_lat']) + ']'
+    point_string += '      }'
+    point_string += '    }'
+    
+    if not int(row.name) == points_count-1:
+        point_string += ','
+    
+    return point_string
+
+
+def line_string(row, points_count):
+    """ 
+    function that receives a row from a dataframe
+    and outputs a geojson-formatted string for the line feature
+    """
+    line_string = '[' + str(row['node_lon']) + ',' + str(row['node_lat']) + ']'
+    
+    if not int(row.name) == points_count-1:
+        line_string += ','
+    
+    return line_string
+
+
+
 # -----------------------------------------------------------------------------
 # get a list of nodes along the route
 # -----------------------------------------------------------------------------
     
 # call the get_nodes function to return the list of nodes with lat/lon
-node_list1 = get_nodes(33.7676338,-84.5606888 , 30.345284,-81.9633076)
+node_list1 = get_nodes(33.7900632,-84.3877407 , 33.7832374,-84.3804347)
 
 
 # OSRM will find an efficient route. If you want to force a specific route,
-# it may be necessary to break up the initial route into sections
-# continue to call get_nodes for each section using node_list2, etc.
-
+# it may be necessary to break up the initial route into sections, calling
+# get_nodes for multiple origin/destination pairs
 
 # concatenate the node lists
 # if you broke up the route by using multiple calls to get_nodes, add them here
@@ -188,10 +230,12 @@ df['prev_lat'], df['prev_lon'] = df['node_lat'].shift(), df['node_lon'].shift()
 df['dist_from_prev'] = df.apply(lambda row: gcd(row['prev_lat'], row['prev_lon'], row['node_lat'], row['node_lon']), axis=1)
 
 # add the distance to next
-df['distance_to_next'] = df['dist_from_prev'].shift(-1)
+df['dist_to_next'] = df['dist_from_prev'].shift(-1)
+df['dist_to_next'] = df['dist_to_next'].fillna(0)
 
 # add the cumulative distance
 df['cuml_dist'] = df['dist_from_prev'].cumsum()
+df['cuml_dist'] = df['cuml_dist'].fillna(0)
 
 # drop the previous node coordinates
 df.drop(columns=['prev_lat', 'prev_lon'], inplace=True)
@@ -206,58 +250,54 @@ print(str(i+1) + ' nodes were written to the file.')
 # generate the spatial objects
 # ----------------------------------------------------------------------------
 
+points_count = df['node_id'].count()
 
 # generate a geojson file of the point objects
-with  open('route_points_geojson.geojson', 'w') as out_file:
+print('Writing nodes geojson file...')
+
+header = '{' 
+header += '  "type" : "FeatureCollection",'
+header += '  "features" : ['
+s_header = pd.Series(header)
+
+footer =  '  ]'
+footer += '}'
+s_footer = pd.Series(footer)
+
+s_points = df.apply(lambda row: point_string(row, points_count), axis=1)
+s_points = pd.concat([s_header, s_points, s_footer], ignore_index=True)
+
+pd.options.display.max_colwidth = 10000
+with open('route_points_geojson.geojson', 'w') as f:
+    f.write(s_points.to_string(index=False, header=False, na_rep='0'))
+
+
+# generate a geojson file of the line object
+print('Writing line geojson file...')
     
-    # write out the headers
-    outfile.writelines('{')
-    outfile.writelines('  "type" : "FeatureCollection",')
-    outfile.writelines('  "features : [')
+header = '{' 
+header += '  "type" : "FeatureCollection",'
+header += '  "features" : ['
+header += '    {'
+header += '      "type" : "Feature",'
+header += '      "properties" : {},'
+header += '      "geometry" : {'
+header += '        "type" : "LineString",'
+header += '        "coordinates" : ['
+s_header = pd.Series(header)
 
+footer =  '        ]'
+footer +=  '      }'
+footer +=  '    }'
+footer +=  '  ]'
+footer += '}'
+s_footer = pd.Series(footer)
 
-    # write out the point objects
-    outfile.writelines('    {')
-    outfile.writelines('      "type": "Feature",')
-    outfile.writelines('      "properties": { ')
-    outfile.writelines('        "node_order": 0,')
-    outfile.writelines('        " node_id": 2253384929,')
-    outfile.writelines('        " distance_from_prev_node": 0,')
-    outfile.writelines('        " cuml_distance": 0,')
-    outfile.writelines('        " distance_to_next_node": 0.01601983,')
-    outfile.writelines('        "type": "route node",')
-    outfile.writelines('        "elevation": 298.978363,')
-    outfile.writelines('        "smoothed elevation": 298.978363')
-    outfile.writelines('      },')
-    outfile.writelines('      "geometry": {')
-    outfile.writelines('        "type": "Point",')
-    outfile.writelines('        "coordinates": [-84.364689,33.8489982]')
-    outfile.writelines('      }')
-    
-    end_comma = ',' if i == len(node_list_clean)-1 else ''
-    
-    outfile.writelines('    }' + end_comma)
+s_line = df[['node_lat','node_lon']].apply(lambda row: line_string(row, points_count), axis=1)
+s_line = pd.concat([s_header, s_line, s_footer], ignore_index=True)
+
+with open('route_line_geojson.geojson', 'w') as f:
+    f.write(s_line.to_string(index=False, header=False, na_rep='0'))
     
     
-    # write out the footers    
-    outfile.writelines('  ]')
-    outfile.writelines('}')
-
-
-
-
-
-newfile = pygeoj.new()
-
-# add the features to the file
-newfile.add_feature(properties={"country":"Norway"},
-                    geometry={"type":"Polygon", "coordinates":[[(21,3),(33,11),(44,22)]]} )
-newfile.add_feature(properties={"country":"USA"},
-                    geometry={"type":"Polygon", "coordinates":[[(11,23),(14,5),(66,31)]]} )
-
-# save the file
-newfile.save("test_construct.geojson")
-
-
-
-
+print('Done')
