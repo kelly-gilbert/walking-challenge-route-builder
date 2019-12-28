@@ -24,8 +24,9 @@
 import requests
 import json
 import xml.etree.ElementTree as et
-import math
-import pandas as pd
+from math import sin, cos, atan2, sqrt, radians
+from pandas import isnull, DataFrame, Series, options, concat
+from os import chdir
 
 
 def gcd(o_lat, o_lon, d_lat, d_lon):
@@ -39,20 +40,50 @@ def gcd(o_lat, o_lon, d_lat, d_lon):
     """
 
     # if any of the inputs are null, then  return 0
-    if pd.isnull(o_lat) or pd.isnull(o_lon) or pd.isnull(d_lat) or pd.isnull(d_lon):
+    if isnull(o_lat) or isnull(o_lon) \
+       or isnull(d_lat) or isnull(d_lon):
         return 0
 
     earth_radius = 3956    # radius of the earth, in miles
 
-    lat_diff = math.radians(d_lat - o_lat)
-    lon_diff = math.radians(d_lon - o_lon)
+    lat_diff = radians(d_lat - o_lat)
+    lon_diff = radians(d_lon - o_lon)
     
-    a = math.sin(lat_diff/2)**2 + math.cos(math.radians(o_lat)) \
-        * math.cos(math.radians(d_lat)) * math.sin(lon_diff/2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    a = sin(lat_diff/2)**2 + cos(radians(o_lat)) \
+        * cos(radians(d_lat)) * sin(lon_diff/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
     d = earth_radius * c
 
     return d
+
+
+def get_node_coordinates(node_id):
+    """ 
+    function that returns lat/lon coordinates for a node using the OSM API
+    NOTE: this API shouldn't be used for recurring, high-volume requests
+    https://operations.osmfoundation.org/policies/api/
+    """
+
+    api_string = 'http://api.openstreetmap.org/api/0.6/node/' + str(node_id)
+
+    # send the get request
+    r = requests.get(api_string)
+
+    if r.status_code == 200:    # request was successful
+        # read in the xml from the response string
+        root = et.fromstring(r.text)
+
+        # within the root, find the node element, 
+        # then get the lat and lon attributes
+        node_lat = float(root.find('node').get('lat'))
+        node_lon = float(root.find('node').get('lon'))
+
+        # add info for this node to the node_list
+        return [node_id, node_lat, node_lon]
+    
+    else:
+        print('Lat/lon could not be found for node ' + str(node_id) \
+              + ' (status code = ' + str(r.status_code) + ')')
 
 
 def get_nodes(o_lat, o_lon, d_lat, d_lon):
@@ -100,28 +131,9 @@ def get_nodes(o_lat, o_lon, d_lat, d_lon):
     node_list = []
 
     for i in range(len(nodes)):
-        # build the API string for the node info
-        # NOTE: this API shouldn't be used for recurring, high-volume requests
-        # https://operations.osmfoundation.org/policies/api/
-        api_string = 'http://api.openstreetmap.org/api/0.6/node/' + str(nodes[i])
-    
-        # send the get request
-        r = requests.get(api_string)
-    
-        if r.status_code == 200:    # request was successful
-            # read in the xml from the response string
-            root = et.fromstring(r.text)
-
-            # within the root, find the node element, 
-            # then find the lat and lon attributes
-            node_lat = float(root.find('node').get('lat'))
-            node_lon = float(root.find('node').get('lon'))
-
-            # add info for this node to the node_list
-            node_list.append([nodes[i], node_lat, node_lon])
-        else:
-            print('Lat/lon could not be found for node ' + str(nodes[i]) \
-                  + ' (status code = ' + str(r.status_code) + ')')
+        
+        # get the node coordinates
+        node_list.append(get_node_coordinates(nodes[i]))
             
         # every 100 nodes, print a status message
         if (i+1) % 100 == 0:
@@ -180,14 +192,22 @@ def line_string(row, points_count):
 # -----------------------------------------------------------------------------
 # get a list of nodes along the route
 # -----------------------------------------------------------------------------
-    
-# call the get_nodes function to return the list of nodes with lat/lon
-node_list1 = get_nodes(33.7900632,-84.3877407 , 33.7832374,-84.3804347)
+
+# set the path for output files
+chdir('C:\\')
+
+
+# return the list of nodes along the route 
+# (enter the origin and destination lat/lons here)
+node_list1 = get_nodes(33.7354442,-84.3980167 , 33.735652, -84.389573)
 
 
 # OSRM will find an efficient route. If you want to force a specific route,
 # it may be necessary to break up the initial route into sections, calling
 # get_nodes for multiple origin/destination pairs
+# node_list2 = get_nodes(,,,)
+# node_list3 = get_nodes(,,,)
+
 
 # concatenate the node lists
 # if you broke up the route by using multiple calls to get_nodes, add them here
@@ -222,7 +242,7 @@ print('After removing dups, the node_list_clean contained ' + str(len(node_list_
 print('Writing nodes to file...')
 
 # create a dataframe of the nodes
-df = pd.DataFrame(node_list_clean, columns=['node_id', 'node_lat', 'node_lon'])
+df = DataFrame(node_list_clean, columns=['node_id', 'node_lat', 'node_lon'])
 
 # add the previous lat/lon and calculate the distance
 df['prev_lat'], df['prev_lon'] = df['node_lat'].shift(), df['node_lon'].shift()
@@ -257,16 +277,16 @@ print('Writing nodes geojson file...')
 header = '{' 
 header += '  "type" : "FeatureCollection",'
 header += '  "features" : ['
-s_header = pd.Series(header)
+s_header = Series(header)
 
 footer =  '  ]'
 footer += '}'
-s_footer = pd.Series(footer)
+s_footer = Series(footer)
 
 s_points = df.apply(lambda row: point_string(row, points_count), axis=1)
-s_points = pd.concat([s_header, s_points, s_footer], ignore_index=True)
+s_points = concat([s_header, s_points, s_footer], ignore_index=True)
 
-pd.options.display.max_colwidth = 10000
+options.display.max_colwidth = 10000
 with open('route_points_geojson.geojson', 'w') as f:
     f.write(s_points.to_string(index=False, header=False, na_rep='0'))
 
@@ -283,17 +303,17 @@ header += '      "properties" : {},'
 header += '      "geometry" : {'
 header += '        "type" : "LineString",'
 header += '        "coordinates" : ['
-s_header = pd.Series(header)
+s_header = Series(header)
 
 footer =  '        ]'
 footer +=  '      }'
 footer +=  '    }'
 footer +=  '  ]'
 footer += '}'
-s_footer = pd.Series(footer)
+s_footer = Series(footer)
 
 s_line = df[['node_lat','node_lon']].apply(lambda row: line_string(row, points_count), axis=1)
-s_line = pd.concat([s_header, s_line, s_footer], ignore_index=True)
+s_line = concat([s_header, s_line, s_footer], ignore_index=True)
 
 with open('route_line_geojson.geojson', 'w') as f:
     f.write(s_line.to_string(index=False, header=False, na_rep='0'))
