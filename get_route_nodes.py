@@ -16,6 +16,12 @@
  2018-05-27 - Removed previous cuml distance and added distance to next node
  2019-08-11 - Changed distance calculations to use a dataframe
  2019-08-12 - Added geojson output for nodes and line (path)
+ 2020-07-02 - Removed annotations and added steps to OSRM call
+            - Changed to parse intersection coordinates from the JSON route 
+              response, rather than using the OSM API to get node coordinates
+              Removed get_node_coordinates function as a result.
+            - Node ID is now the concatenated lat|lon instead of the 
+              OSM node ID
  -----------------------------------------------------------------------------
 """
 
@@ -23,9 +29,8 @@
 # import modules
 import requests
 import json
-import xml.etree.ElementTree as et
 from math import sin, cos, atan2, sqrt, radians
-from pandas import isnull, DataFrame, Series, options, concat
+from pandas import isnull, DataFrame, Series, concat
 from os import chdir
 
 
@@ -57,48 +62,20 @@ def gcd(o_lat, o_lon, d_lat, d_lon):
     return d
 
 
-def get_node_coordinates(node_id):
-    """ 
-    function that returns lat/lon coordinates for a node using the OSM API
-    NOTE: this API shouldn't be used for recurring, high-volume requests
-    https://operations.osmfoundation.org/policies/api/
-    """
-
-    api_string = 'http://api.openstreetmap.org/api/0.6/node/' + str(node_id)
-
-    # send the get request
-    r = requests.get(api_string)
-
-    if r.status_code == 200:    # request was successful
-        # read in the xml from the response string
-        root = et.fromstring(r.text)
-
-        # within the root, find the node element, 
-        # then get the lat and lon attributes
-        node_lat = float(root.find('node').get('lat'))
-        node_lon = float(root.find('node').get('lon'))
-
-        # add info for this node to the node_list
-        return [node_id, node_lat, node_lon]
-    
-    else:
-        print('Lat/lon could not be found for node ' + str(node_id) \
-              + ' (status code = ' + str(r.status_code) + ')')
-
-
 def get_nodes(o_lat, o_lon, d_lat, d_lon):
     """
-    function that finds nodes along a driving or walking route from the Open Source
-    Routing Machine and returns a list containing nodes along the route
-    http://project-osrm.org/docs/v5.9.1/api/#general-options
-    inputs: origin lat and lon, destination lat and lon
-    outputs: OSM node id, node lat, node lon
+    function that finds nodes (intersections) along a driving or walking route 
+    # from the Open Source Routing Machine and returns a list containing nodes 
+    # along the route
+    # http://project-osrm.org/docs/v5.9.1/api/#general-options
+    # inputs: origin lat and lon, destination lat and lon for the route
+    # outputs: node id, node lat, node lon
     """
 
     # build OSRM API string for the route
     api_string = 'http://router.project-osrm.org/route/v1/driving/' + str(o_lon) \
                 + ',' + str(o_lat) + ';' + str(d_lon) + ',' + str(d_lat) + \
-                '?overview=false&annotations=nodes'
+                '?overview=false&steps=true'
 
     # send the get request
     r = requests.get(api_string)
@@ -113,33 +90,16 @@ def get_nodes(o_lat, o_lon, d_lat, d_lon):
         pass
     
     # parse the json route response
-    r_parsed = json.loads(r.text)
+    # route --> leg --> step --> intersection
+    # in this case, there will only be one route/leg in the response
+    steps = json.loads(r.text)['routes'][0]['legs'][0]['steps']
 
-    # return the routes element, 
-    #   then the legs element within that, 
-    #   then the annotation element within that,
-    #   then the nodes element within that.
-    # nodes is a list of OSM node IDs
-    routes = r_parsed['routes'][0]
-    legs = routes['legs'][0]
-    annotation = legs['annotation']
-    nodes = annotation['nodes']
-    print('  The route contains ' + str(len(nodes)) + ' nodes')
-
-    # iterate through the nodes in the route and find the lat/lon
-    print('  Finding lat/lon for each node...')
+    # iterate through the intersections in the route and find the lat/lons
     node_list = []
-
-    for i in range(len(nodes)):
-        
-        # get the node coordinates
-        node_list.append(get_node_coordinates(nodes[i]))
-            
-        # every 100 nodes, print a status message
-        if (i+1) % 100 == 0:
-            print('    Completed node ' + str(i+1) + ' of ' + str(len(nodes)) + '...')
-
-    print('  Done getting nodes')     
+    for s in steps:
+        for i in s['intersections']:
+            node_list.append([str(i['location'][1]) + '|' + str(i['location'][0]), \
+                                 i['location'][1], i['location'][0] ])                   
 
     # add the starting and ending points to the list
     node_list.insert(0, ['start', o_lat, o_lon])
@@ -188,13 +148,12 @@ def line_string(row, points_count):
     return line_string
 
 
-
 # -----------------------------------------------------------------------------
 # get a list of nodes along the route
 # -----------------------------------------------------------------------------
 
 # set the path for output files
-chdir('C:\\')
+chdir('C:\\test')
 
 
 # return the list of nodes along the route 
@@ -231,22 +190,24 @@ for i in range(len(full_node_list)):
         del prev_5_nodes[0]
         prev_5_nodes.append(full_node_list[i][0])                
 
-print('After removing dups, the node_list_clean contained ' + str(len(node_list_clean)) \
+print('    After removing dups, the node_list_clean contained ' + str(len(node_list_clean)) \
       + ' nodes')
 
 
 # -----------------------------------------------------------------------------
-# write the node list to a csv file
+# calculate between-node distances
 # -----------------------------------------------------------------------------
 
-print('Writing nodes to file...')
+print('Calculating distances...')
 
-# create a dataframe of the nodes
+# convert the node list to a dataframe
 df = DataFrame(node_list_clean, columns=['node_id', 'node_lat', 'node_lon'])
 
-# add the previous lat/lon and calculate the distance
+# add the previous lat/lon and calculate the distance from previous node
 df['prev_lat'], df['prev_lon'] = df['node_lat'].shift(), df['node_lon'].shift()
-df['dist_from_prev'] = df.apply(lambda row: gcd(row['prev_lat'], row['prev_lon'], row['node_lat'], row['node_lon']), axis=1)
+df['dist_from_prev'] = df.apply(lambda row: 
+                                gcd(row['prev_lat'], row['prev_lon'], 
+                                    row['node_lat'], row['node_lon']), axis=1)
 
 # add the distance to next
 df['dist_to_next'] = df['dist_from_prev'].shift(-1)
@@ -259,20 +220,26 @@ df['cuml_dist'] = df['cuml_dist'].fillna(0)
 # drop the previous node coordinates
 df.drop(columns=['prev_lat', 'prev_lon'], inplace=True)
 
-# write the file
+
+# -----------------------------------------------------------------------------
+# write the node list to a csv file
+# -----------------------------------------------------------------------------
+
+print('Writing nodes to file...')
+
 df.to_csv(path_or_buf='route_nodes.csv', index=True, index_label='node_order')
 
-print(str(i+1) + ' nodes were written to the file.')
+print('    ' + str(len(df)) + ' nodes were written to the csv file.')
 
 
 # -----------------------------------------------------------------------------
 # generate the spatial objects
 # ----------------------------------------------------------------------------
 
-points_count = df['node_id'].count()
-
 # generate a geojson file of the point objects
 print('Writing nodes geojson file...')
+
+points_count = len(df)
 
 header = '{' 
 header += '  "type" : "FeatureCollection",'
@@ -286,7 +253,6 @@ s_footer = Series(footer)
 s_points = df.apply(lambda row: point_string(row, points_count), axis=1)
 s_points = concat([s_header, s_points, s_footer], ignore_index=True)
 
-options.display.max_colwidth = 10000
 with open('route_points_geojson.geojson', 'w') as f:
     f.write(s_points.to_string(index=False, header=False, na_rep='0'))
 
